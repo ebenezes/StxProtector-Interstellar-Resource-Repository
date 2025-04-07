@@ -219,3 +219,95 @@
     )
   )
 )
+
+;; Register transaction challenge with evidence
+(define-public (register-transaction-challenge (chamber-index uint) (challenge-reason (string-ascii 100)) (evidence-hash (buff 32)))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (originator (get originator chamber-data))
+        (destination (get destination chamber-data))
+        (current-status (get chamber-status chamber-data))
+      )
+      ;; Only originator or destination can challenge a transaction
+      (asserts! (or (is-eq tx-sender originator) (is-eq tx-sender destination)) ERR_UNAUTHORIZED)
+      ;; Can only challenge pending, acknowledged, or under-review transactions
+      (asserts! (or (is-eq current-status "pending") 
+                   (is-eq current-status "acknowledged")
+                   (is-eq current-status "under-review")) ERR_PREVIOUSLY_PROCESSED)
+      ;; Chamber must not be expired
+      (asserts! (<= block-height (get termination-block chamber-data)) ERR_CHAMBER_LAPSED)
+
+      ;; Update chamber status to challenged
+      (map-set ChamberRegistry
+        { chamber-index: chamber-index }
+        (merge chamber-data { chamber-status: "challenged" })
+      )
+      (print {action: "transaction_challenged", chamber-index: chamber-index, 
+              challenger: tx-sender, challenge-reason: challenge-reason, 
+              evidence-hash: evidence-hash})
+      (ok true)
+    )
+  )
+)
+
+;; Apply rate limiting protection
+(define-public (apply-rate-limiting (chamber-index uint) (transactions-per-period uint) (period-length uint))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (asserts! (> transactions-per-period u0) ERR_INVALID_QUANTITY)
+    (asserts! (<= transactions-per-period u10) ERR_INVALID_QUANTITY) ;; Maximum 10 transactions per period
+    (asserts! (> period-length u6) ERR_INVALID_QUANTITY) ;; Minimum 6 blocks period (~1 hour)
+    (asserts! (<= period-length u144) ERR_INVALID_QUANTITY) ;; Maximum 144 blocks period (~1 day)
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (originator (get originator chamber-data))
+        (quantity (get quantity chamber-data))
+      )
+      ;; Only originator or admin can apply rate limiting
+      (asserts! (or (is-eq tx-sender originator) (is-eq tx-sender ADMIN_USER)) ERR_UNAUTHORIZED)
+      ;; Only for chambers above a value threshold
+      (asserts! (> quantity u1000) (err u601))
+      ;; Chamber must be in pending state
+      (asserts! (is-eq (get chamber-status chamber-data) "pending") ERR_PREVIOUSLY_PROCESSED)
+      ;; Chamber must not be expired
+      (asserts! (<= block-height (get termination-block chamber-data)) ERR_CHAMBER_LAPSED)
+
+      (print {action: "rate_limiting_applied", chamber-index: chamber-index, 
+              originator: originator, transactions-per-period: transactions-per-period, 
+              period-length: period-length})
+      (ok true)
+    )
+  )
+)
+
+;; Restore resources to originator
+(define-public (revert-chamber-resources (chamber-index uint))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (originator (get originator chamber-data))
+        (quantity (get quantity chamber-data))
+      )
+      (asserts! (is-eq tx-sender ADMIN_USER) ERR_UNAUTHORIZED)
+      (asserts! (is-eq (get chamber-status chamber-data) "pending") ERR_PREVIOUSLY_PROCESSED)
+      (match (as-contract (stx-transfer? quantity tx-sender originator))
+        success
+          (begin
+            (map-set ChamberRegistry
+              { chamber-index: chamber-index }
+              (merge chamber-data { chamber-status: "returned" })
+            )
+            (print {action: "resources_restored", chamber-index: chamber-index, originator: originator, quantity: quantity})
+            (ok true)
+          )
+        error ERR_TRANSMISSION_FAILED
+      )
+    )
+  )
+)
