@@ -401,3 +401,86 @@
   )
 )
 
+;; Implement transaction rate limiting
+(define-public (implement-rate-limiting (chamber-index uint) (max-transactions uint) (time-window uint))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (asserts! (> max-transactions u0) ERR_INVALID_QUANTITY)
+    (asserts! (<= max-transactions u5) ERR_INVALID_QUANTITY) ;; Maximum 5 transactions in window
+    (asserts! (> time-window u12) ERR_INVALID_QUANTITY) ;; Minimum 12 blocks window (~2 hours)
+    (asserts! (<= time-window u144) ERR_INVALID_QUANTITY) ;; Maximum 144 blocks window (~1 day)
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (originator (get originator chamber-data))
+        (destination (get destination chamber-data))
+        (window-end-block (+ block-height time-window))
+      )
+      ;; Only admin, originator or destination can implement rate limiting
+      (asserts! (or (is-eq tx-sender originator) (is-eq tx-sender destination) (is-eq tx-sender ADMIN_USER)) ERR_UNAUTHORIZED)
+      ;; Only for pending or acknowledged chambers
+      (asserts! (or (is-eq (get chamber-status chamber-data) "pending") 
+                   (is-eq (get chamber-status chamber-data) "acknowledged")) 
+                ERR_PREVIOUSLY_PROCESSED)
+
+      (print {action: "rate_limiting_implemented", chamber-index: chamber-index, 
+              implementer: tx-sender, max-transactions: max-transactions,
+              time-window: time-window, window-end-block: window-end-block})
+      (ok window-end-block)
+    )
+  )
+)
+
+;; Apply cryptographic verification
+(define-public (apply-cryptographic-proof (chamber-index uint) (cryptographic-hash (buff 65)))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (originator (get originator chamber-data))
+        (destination (get destination chamber-data))
+      )
+      (asserts! (or (is-eq tx-sender originator) (is-eq tx-sender destination)) ERR_UNAUTHORIZED)
+      (asserts! (or (is-eq (get chamber-status chamber-data) "pending") (is-eq (get chamber-status chamber-data) "acknowledged")) ERR_PREVIOUSLY_PROCESSED)
+      (print {action: "cryptographic_proof_applied", chamber-index: chamber-index, applier: tx-sender, cryptographic-hash: cryptographic-hash})
+      (ok true)
+    )
+  )
+)
+
+;; Conclude review with arbitration
+(define-public (conclude-review (chamber-index uint) (originator-allocation uint))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (asserts! (is-eq tx-sender ADMIN_USER) ERR_UNAUTHORIZED)
+    (asserts! (<= originator-allocation u100) ERR_INVALID_QUANTITY) ;; Percentage 0-100
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (originator (get originator chamber-data))
+        (destination (get destination chamber-data))
+        (quantity (get quantity chamber-data))
+        (originator-quantity (/ (* quantity originator-allocation) u100))
+        (destination-quantity (- quantity originator-quantity))
+      )
+      (asserts! (is-eq (get chamber-status chamber-data) "under-review") (err u112)) ;; Must be under review
+      (asserts! (<= block-height (get termination-block chamber-data)) ERR_CHAMBER_LAPSED)
+
+      ;; Allocate originator portion
+      (unwrap! (as-contract (stx-transfer? originator-quantity tx-sender originator)) ERR_TRANSMISSION_FAILED)
+
+      ;; Allocate destination portion
+      (unwrap! (as-contract (stx-transfer? destination-quantity tx-sender destination)) ERR_TRANSMISSION_FAILED)
+
+      (map-set ChamberRegistry
+        { chamber-index: chamber-index }
+        (merge chamber-data { chamber-status: "concluded" })
+      )
+      (print {action: "review_concluded", chamber-index: chamber-index, originator: originator, destination: destination, 
+              originator-quantity: originator-quantity, destination-quantity: destination-quantity, originator-allocation: originator-allocation})
+      (ok true)
+    )
+  )
+)
+
