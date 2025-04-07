@@ -1221,3 +1221,65 @@
     )
   )
 )
+
+;; Implement chamber intrusion detection system
+(define-public (configure-intrusion-detection (chamber-index uint) (detection-threshold uint) (alert-destinations (list 3 principal)))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (asserts! (> detection-threshold u0) ERR_INVALID_QUANTITY)
+    (asserts! (<= detection-threshold u5) ERR_INVALID_QUANTITY) ;; Maximum 5 suspicious attempts
+    (asserts! (> (len alert-destinations) u0) ERR_INVALID_QUANTITY) ;; Need at least one destination
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (originator (get originator chamber-data))
+        (destination (get destination chamber-data))
+        (quantity (get quantity chamber-data))
+      )
+      ;; Only originator, destination or admin can configure intrusion detection
+      (asserts! (or (is-eq tx-sender originator) (is-eq tx-sender destination) (is-eq tx-sender ADMIN_USER)) ERR_UNAUTHORIZED)
+      ;; Chamber must be pending or acknowledged
+      (asserts! (or (is-eq (get chamber-status chamber-data) "pending") 
+                   (is-eq (get chamber-status chamber-data) "acknowledged")) 
+                ERR_PREVIOUSLY_PROCESSED)
+      ;; Verify alert destinations include originator
+      (asserts! (is-some (index-of alert-destinations originator)) (err u700))
+
+      (print {action: "intrusion_detection_configured", chamber-index: chamber-index, 
+              requester: tx-sender, detection-threshold: detection-threshold,
+              alert-destinations: alert-destinations})
+      (ok true)
+    )
+  )
+)
+
+;; Establish secure custody transition protocol
+(define-public (establish-custody-transition (chamber-index uint) (transition-delay uint) (verification-code (buff 32)))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (asserts! (> transition-delay u24) ERR_INVALID_QUANTITY) ;; Minimum 24 blocks delay (~4 hours)
+    (asserts! (<= transition-delay u288) ERR_INVALID_QUANTITY) ;; Maximum 288 blocks delay (~2 days)
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (originator (get originator chamber-data))
+        (destination (get destination chamber-data))
+        (quantity (get quantity chamber-data))
+        (execution-block (+ block-height transition-delay))
+      )
+      ;; Only originator or admin can establish custody transition
+      (asserts! (or (is-eq tx-sender originator) (is-eq tx-sender ADMIN_USER)) ERR_UNAUTHORIZED)
+      ;; Chamber must be pending and substantial value
+      (asserts! (is-eq (get chamber-status chamber-data) "pending") ERR_PREVIOUSLY_PROCESSED)
+      (asserts! (> quantity u5000) (err u800)) ;; Minimum value for custody transition
+
+      ;; Verification code must have sufficient entropy (simple check)
+      (asserts! (not (is-eq verification-code 0x0000000000000000000000000000000000000000000000000000000000000000)) (err u801))
+
+      (print {action: "custody_transition_established", chamber-index: chamber-index, 
+              originator: originator, destination: destination, execution-block: execution-block,
+              verification-hash: (hash160 verification-code)})
+      (ok true)
+    )
+  )
+)
