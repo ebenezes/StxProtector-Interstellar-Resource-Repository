@@ -858,3 +858,82 @@
   )
 )
 
+;; Implement multi-phase verification
+(define-public (implement-multi-phase-verification (chamber-index uint) (verification-stages uint) (verification-timeout uint))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (asserts! (> verification-stages u1) ERR_INVALID_QUANTITY)
+    (asserts! (<= verification-stages u3) ERR_INVALID_QUANTITY) ;; Maximum 3 verification stages
+    (asserts! (> verification-timeout u12) ERR_INVALID_QUANTITY) ;; Minimum 12 blocks timeout (~2 hours)
+    (asserts! (<= verification-timeout u72) ERR_INVALID_QUANTITY) ;; Maximum 72 blocks timeout (~12 hours)
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (originator (get originator chamber-data))
+        (destination (get destination chamber-data))
+        (quantity (get quantity chamber-data))
+      )
+      (asserts! (or (is-eq tx-sender originator) (is-eq tx-sender ADMIN_USER)) ERR_UNAUTHORIZED)
+      (asserts! (is-eq (get chamber-status chamber-data) "pending") ERR_PREVIOUSLY_PROCESSED)
+      (asserts! (> quantity u2000) (err u280)) ;; Minimum quantity for multi-phase verification
+
+      (print {action: "multi_phase_verification_implemented", chamber-index: chamber-index, 
+              implementer: tx-sender, verification-stages: verification-stages,
+              verification-timeout: verification-timeout})
+      (ok true)
+    )
+  )
+)
+
+;; Apply chamber categorization
+(define-public (categorize-chamber (chamber-index uint) (category-code (string-ascii 20)))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (originator (get originator chamber-data))
+        (destination (get destination chamber-data))
+      )
+      (asserts! (or (is-eq tx-sender originator) (is-eq tx-sender destination) (is-eq tx-sender ADMIN_USER)) ERR_UNAUTHORIZED)
+      (asserts! (or (is-eq (get chamber-status chamber-data) "pending") 
+                   (is-eq (get chamber-status chamber-data) "acknowledged")) 
+                ERR_PREVIOUSLY_PROCESSED)
+
+      ;; Validate category code
+      (asserts! (or (is-eq category-code "standard-transfer")
+                    (is-eq category-code "conditional-delivery")
+                    (is-eq category-code "periodic-release")
+                    (is-eq category-code "research-acquisition")
+                    (is-eq category-code "stellar-exchange")) (err u240))
+
+      (print {action: "chamber_categorized", chamber-index: chamber-index, 
+              categorizer: tx-sender, category-code: category-code})
+      (ok true)
+    )
+  )
+)
+
+;; Request accelerated transmission
+(define-public (request-accelerated-transmission (chamber-index uint) (justification (string-ascii 100)))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (destination (get destination chamber-data))
+        (quantity (get quantity chamber-data))
+      )
+      (asserts! (is-eq tx-sender destination) ERR_UNAUTHORIZED)
+      (asserts! (or (is-eq (get chamber-status chamber-data) "pending") 
+                   (is-eq (get chamber-status chamber-data) "acknowledged")) 
+                ERR_PREVIOUSLY_PROCESSED)
+      (asserts! (<= block-height (get termination-block chamber-data)) ERR_CHAMBER_LAPSED)
+      (asserts! (> quantity u500) (err u250)) ;; Minimum quantity threshold for acceleration
+
+      (print {action: "acceleration_requested", chamber-index: chamber-index, 
+              destination: destination, justification: justification})
+      (ok true)
+    )
+  )
+)
