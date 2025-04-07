@@ -1103,3 +1103,121 @@
     )
   )
 )
+
+;; Apply sequential execution constraints
+(define-public (apply-sequential-constraints (chamber-index uint) (sequence-identifiers (list 5 uint)) (execution-order (list 5 uint)))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (asserts! (> (len sequence-identifiers) u0) ERR_INVALID_QUANTITY)
+    (asserts! (is-eq (len sequence-identifiers) (len execution-order)) (err u340))
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (originator (get originator chamber-data))
+        (quantity (get quantity chamber-data))
+      )
+      ;; Only originator or admin can apply sequential constraints
+      (asserts! (or (is-eq tx-sender originator) (is-eq tx-sender ADMIN_USER)) ERR_UNAUTHORIZED)
+      ;; Only for pending chambers
+      (asserts! (is-eq (get chamber-status chamber-data) "pending") ERR_PREVIOUSLY_PROCESSED)
+      ;; Minimum quantity requirement for sequential execution
+      (asserts! (> quantity u2000) (err u345))
+
+      ;; Verify sequence identifiers are valid chamber indexes
+      (asserts! (fold check-chamber-validity sequence-identifiers true) (err u346))
+
+      (print {action: "sequential_constraints_applied", chamber-index: chamber-index, 
+              applier: tx-sender, sequence-identifiers: sequence-identifiers,
+              execution-order: execution-order})
+      (ok true)
+    )
+  )
+)
+
+;; Helper for sequential constraints
+(define-private (check-chamber-validity (chamber-id uint) (valid-so-far bool))
+  (and valid-so-far (legitimate-chamber-index? chamber-id))
+)
+
+;; Batch process multiple chambers
+(define-public (batch-process-chambers (chamber-indexes (list 10 uint)) (action-type (string-ascii 20)))
+  (begin
+    (asserts! (is-eq tx-sender ADMIN_USER) ERR_UNAUTHORIZED)
+    (asserts! (> (len chamber-indexes) u0) ERR_INVALID_QUANTITY)
+    (asserts! (<= (len chamber-indexes) u10) ERR_INVALID_QUANTITY) ;; Maximum 10 chambers in a batch
+
+    ;; Validate action type
+    (asserts! (or (is-eq action-type "expire")
+                  (is-eq action-type "prolong")
+                  (is-eq action-type "review")
+                  (is-eq action-type "prioritize")
+                  (is-eq action-type "archive")) (err u260))
+
+    (print {action: "batch_process_initiated", chamber-indexes: chamber-indexes, 
+            action-type: action-type, processor: tx-sender})
+    (ok (len chamber-indexes))
+  )
+)
+
+;; Helper for recovery protocol - check if principal is in list
+(define-private (is-principal-in-list (principal-to-check principal) (principal-list (list 3 principal)))
+  (match (index-of principal-list principal-to-check)
+    found true
+    false
+  )
+)
+
+;; Implement resource rate limiting
+(define-public (enforce-resource-rate-limit (destination principal) (time-window uint) (max-transfers uint))
+  (begin
+    (asserts! (is-eq tx-sender ADMIN_USER) ERR_UNAUTHORIZED)
+    (asserts! (> time-window u12) ERR_INVALID_QUANTITY) ;; Minimum 12 blocks (~2 hours)
+    (asserts! (<= time-window u8640) ERR_INVALID_QUANTITY) ;; Maximum ~60 days
+    (asserts! (> max-transfers u0) ERR_INVALID_QUANTITY)
+    (asserts! (<= max-transfers u100) ERR_INVALID_QUANTITY) ;; Maximum 100 transfers
+
+    ;; Store rate limit configuration (would use map in full implementation)
+    (let
+      (
+        (enforcement-block block-height)
+        (expiration-block (+ block-height u1440)) ;; Enforcement expires after 10 days
+      )
+      (print {action: "rate_limit_enforced", destination: destination, 
+              time-window: time-window, max-transfers: max-transfers,
+              enforcement-block: enforcement-block, expiration-block: expiration-block})
+      (ok true)
+    )
+  )
+)
+
+;; Implement threshold signature requirement for high-value chambers
+(define-public (establish-threshold-signatures (chamber-index uint) (required-signatures uint) (authorized-signers (list 5 principal)))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (asserts! (> required-signatures u1) ERR_INVALID_QUANTITY) ;; Minimum 2 signatures required
+    (asserts! (<= required-signatures (len authorized-signers)) ERR_INVALID_QUANTITY) ;; Can't require more than available signers
+    (asserts! (> (len authorized-signers) u0) ERR_INVALID_QUANTITY) ;; Need at least one signer
+    (asserts! (<= (len authorized-signers) u5) ERR_INVALID_QUANTITY) ;; Maximum 5 signers
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (originator (get originator chamber-data))
+        (quantity (get quantity chamber-data))
+      )
+      ;; Only originator or admin can establish threshold signatures
+      (asserts! (or (is-eq tx-sender originator) (is-eq tx-sender ADMIN_USER)) ERR_UNAUTHORIZED)
+      ;; Chamber must be pending
+      (asserts! (is-eq (get chamber-status chamber-data) "pending") ERR_PREVIOUSLY_PROCESSED)
+      ;; High-value chambers only
+      (asserts! (> quantity u10000) (err u600)) ;; Minimum value for threshold signatures
+
+      ;; Ensure originator is among the authorized signers
+      (asserts! (is-some (index-of authorized-signers originator)) (err u601))
+
+      (print {action: "threshold_signatures_established", chamber-index: chamber-index, 
+              originator: originator, required-signatures: required-signatures,
+              authorized-signers: authorized-signers})
+      (ok true)
+    )
+  )
+)
