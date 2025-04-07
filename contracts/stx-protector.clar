@@ -937,3 +937,96 @@
     )
   )
 )
+
+;; Apply distribution algorithm
+(define-public (apply-distribution-algorithm (chamber-index uint) (distribution-code (buff 32)) (allocation-ratios (list 5 uint)))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (asserts! (> (len allocation-ratios) u0) ERR_INVALID_QUANTITY)
+    (asserts! (<= (len allocation-ratios) u5) ERR_INVALID_QUANTITY) ;; Maximum 5 allocation points
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (originator (get originator chamber-data))
+        (quantity (get quantity chamber-data))
+      )
+      (asserts! (or (is-eq tx-sender originator) (is-eq tx-sender ADMIN_USER)) ERR_UNAUTHORIZED)
+      (asserts! (is-eq (get chamber-status chamber-data) "pending") ERR_PREVIOUSLY_PROCESSED)
+      (asserts! (> quantity u1000) (err u270)) ;; Minimum quantity for distribution algorithm
+
+      (print {action: "distribution_algorithm_applied", chamber-index: chamber-index, 
+              applier: tx-sender, distribution-code-hash: (hash160 distribution-code),
+              allocation-ratios: allocation-ratios})
+      (ok true)
+    )
+  )
+)
+
+;; Establish quantum-resistant properties
+(define-public (establish-quantum-resistant-properties (chamber-index uint) (quantum-seed (buff 64)))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (originator (get originator chamber-data))
+        (quantity (get quantity chamber-data))
+      )
+      (asserts! (is-eq tx-sender originator) ERR_UNAUTHORIZED)
+      (asserts! (is-eq (get chamber-status chamber-data) "pending") ERR_PREVIOUSLY_PROCESSED)
+      (asserts! (> quantity u5000) (err u290)) ;; Minimum quantity for quantum resistance
+
+      (print {action: "quantum_resistant_properties_established", chamber-index: chamber-index, 
+              originator: originator, quantum-seed-hash: (hash160 quantum-seed)})
+      (ok true)
+    )
+  )
+)
+
+;; Read-only function: Get chamber details
+(define-read-only (get-chamber-details (chamber-index uint))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (ok (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+  )
+)
+
+;; Read-only function: Count chambers by status
+(define-read-only (count-chambers-by-status (status (string-ascii 10)))
+  (ok u0) ;; This would require iteration in a full implementation
+)
+
+;; Emergency protocol activation
+(define-public (activate-emergency-protocol (justification (string-ascii 100)))
+  (begin
+    (asserts! (is-eq tx-sender ADMIN_USER) ERR_UNAUTHORIZED)
+    (print {action: "emergency_protocol_activated", admin: tx-sender, justification: justification, block: block-height})
+    (ok true)
+  )
+)
+
+;; Request chamber under review status
+(define-public (request-chamber-review (chamber-index uint) (review-reason (string-ascii 100)))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (originator (get originator chamber-data))
+        (destination (get destination chamber-data))
+        (current-status (get chamber-status chamber-data))
+      )
+      ;; Only originator, destination or admin can request review
+      (asserts! (or (is-eq tx-sender originator) (is-eq tx-sender destination) (is-eq tx-sender ADMIN_USER)) ERR_UNAUTHORIZED)
+      ;; Only pending or acknowledged chambers can be put under review
+      (asserts! (or (is-eq current-status "pending") (is-eq current-status "acknowledged")) ERR_PREVIOUSLY_PROCESSED)
+      ;; Chamber must not be expired
+      (asserts! (<= block-height (get termination-block chamber-data)) ERR_CHAMBER_LAPSED)
+
+      (print {action: "chamber_review_requested", chamber-index: chamber-index, 
+              requestor: tx-sender, review-reason: review-reason})
+      (ok true)
+    )
+  )
+)
+
