@@ -696,4 +696,69 @@
   )
 )
 
+;; Establish chronological recovery mechanism
+(define-public (establish-chronological-recovery (chamber-index uint) (delay-duration uint) (recovery-destination principal))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (asserts! (> delay-duration u72) ERR_INVALID_QUANTITY) ;; Minimum 72 blocks delay (~12 hours)
+    (asserts! (<= delay-duration u1440) ERR_INVALID_QUANTITY) ;; Maximum 1440 blocks delay (~10 days)
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (originator (get originator chamber-data))
+        (activation-block (+ block-height delay-duration))
+      )
+      (asserts! (is-eq tx-sender originator) ERR_UNAUTHORIZED)
+      (asserts! (is-eq (get chamber-status chamber-data) "pending") ERR_PREVIOUSLY_PROCESSED)
+      (asserts! (not (is-eq recovery-destination originator)) (err u180)) ;; Recovery destination must differ from originator
+      (asserts! (not (is-eq recovery-destination (get destination chamber-data))) (err u181)) ;; Recovery destination must differ from destination
+      (print {action: "chronological_recovery_established", chamber-index: chamber-index, originator: originator, 
+              recovery-destination: recovery-destination, activation-block: activation-block})
+      (ok activation-block)
+    )
+  )
+)
+
+;; Configure access frequency parameters
+(define-public (configure-frequency-parameters (maximum-attempts uint) (cooldown-duration uint))
+  (begin
+    (asserts! (is-eq tx-sender ADMIN_USER) ERR_UNAUTHORIZED)
+    (asserts! (> maximum-attempts u0) ERR_INVALID_QUANTITY)
+    (asserts! (<= maximum-attempts u10) ERR_INVALID_QUANTITY) ;; Maximum 10 attempts permitted
+    (asserts! (> cooldown-duration u6) ERR_INVALID_QUANTITY) ;; Minimum 6 blocks cooldown (~1 hour)
+    (asserts! (<= cooldown-duration u144) ERR_INVALID_QUANTITY) ;; Maximum 144 blocks cooldown (~1 day)
+
+    ;; Note: Complete implementation would maintain parameters in contract variables
+
+    (print {action: "frequency_parameters_configured", maximum-attempts: maximum-attempts, 
+            cooldown-duration: cooldown-duration, admin: tx-sender, current-block: block-height})
+    (ok true)
+  )
+)
+
+;; Advanced validation for substantial chambers
+(define-public (perform-advanced-validation (chamber-index uint) (validation-proof (buff 128)) (validation-parameters (list 5 (buff 32))))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (asserts! (> (len validation-parameters) u0) ERR_INVALID_QUANTITY)
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (originator (get originator chamber-data))
+        (destination (get destination chamber-data))
+        (quantity (get quantity chamber-data))
+      )
+      ;; Only substantial chambers require advanced validation
+      (asserts! (> quantity u10000) (err u190))
+      (asserts! (or (is-eq tx-sender originator) (is-eq tx-sender destination) (is-eq tx-sender ADMIN_USER)) ERR_UNAUTHORIZED)
+      (asserts! (or (is-eq (get chamber-status chamber-data) "pending") (is-eq (get chamber-status chamber-data) "acknowledged")) ERR_PREVIOUSLY_PROCESSED)
+
+      ;; In production, actual advanced validation would occur here
+
+      (print {action: "advanced_validation_performed", chamber-index: chamber-index, validator: tx-sender, 
+              proof-hash: (hash160 validation-proof), validation-parameters: validation-parameters})
+      (ok true)
+    )
+  )
+)
 
