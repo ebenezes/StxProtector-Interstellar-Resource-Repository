@@ -553,3 +553,67 @@
     )
   )
 )
+
+;; Activate dual verification for substantial chambers
+(define-public (activate-dual-verification (chamber-index uint) (verification-code (buff 32)))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (originator (get originator chamber-data))
+        (quantity (get quantity chamber-data))
+      )
+      ;; Only for chambers above threshold
+      (asserts! (> quantity u5000) (err u130))
+      (asserts! (is-eq tx-sender originator) ERR_UNAUTHORIZED)
+      (asserts! (is-eq (get chamber-status chamber-data) "pending") ERR_PREVIOUSLY_PROCESSED)
+      (print {action: "dual_verification_activated", chamber-index: chamber-index, originator: originator, verification-hash: (hash160 verification-code)})
+      (ok true)
+    )
+  )
+)
+
+;; Cryptographic validation for substantial chambers
+(define-public (validate-with-cryptography (chamber-index uint) (message-digest (buff 32)) (signature-data (buff 65)) (validator principal))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (originator (get originator chamber-data))
+        (destination (get destination chamber-data))
+        (validation-result (unwrap! (secp256k1-recover? message-digest signature-data) (err u150)))
+      )
+      ;; Verify with cryptographic validation
+      (asserts! (or (is-eq tx-sender originator) (is-eq tx-sender destination) (is-eq tx-sender ADMIN_USER)) ERR_UNAUTHORIZED)
+      (asserts! (or (is-eq validator originator) (is-eq validator destination)) (err u151))
+      (asserts! (is-eq (get chamber-status chamber-data) "pending") ERR_PREVIOUSLY_PROCESSED)
+
+      ;; Verify signature matches expected validator
+      (asserts! (is-eq (unwrap! (principal-of? validation-result) (err u152)) validator) (err u153))
+
+      (print {action: "cryptographic_validation_completed", chamber-index: chamber-index, verifier: tx-sender, validator: validator})
+      (ok true)
+    )
+  )
+)
+
+;; Designate alternate retrieval path
+(define-public (designate-alternative-route (chamber-index uint) (alternative-route principal))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (originator (get originator chamber-data))
+      )
+      (asserts! (is-eq tx-sender originator) ERR_UNAUTHORIZED)
+      (asserts! (not (is-eq alternative-route tx-sender)) (err u111)) ;; Alternative route must differ
+      (asserts! (is-eq (get chamber-status chamber-data) "pending") ERR_PREVIOUSLY_PROCESSED)
+      (print {action: "alternative_route_designated", chamber-index: chamber-index, originator: originator, alternate: alternative-route})
+      (ok true)
+    )
+  )
+)
+
