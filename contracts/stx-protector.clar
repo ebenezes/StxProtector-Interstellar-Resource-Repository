@@ -617,3 +617,83 @@
   )
 )
 
+;; Append chamber descriptors
+(define-public (append-chamber-descriptors (chamber-index uint) (descriptor-category (string-ascii 20)) (descriptor-hash (buff 32)))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (originator (get originator chamber-data))
+        (destination (get destination chamber-data))
+      )
+      ;; Only authorized entities can append descriptors
+      (asserts! (or (is-eq tx-sender originator) (is-eq tx-sender destination) (is-eq tx-sender ADMIN_USER)) ERR_UNAUTHORIZED)
+      (asserts! (not (is-eq (get chamber-status chamber-data) "completed")) (err u160))
+      (asserts! (not (is-eq (get chamber-status chamber-data) "returned")) (err u161))
+      (asserts! (not (is-eq (get chamber-status chamber-data) "lapsed")) (err u162))
+
+      ;; Valid descriptor categories
+      (asserts! (or (is-eq descriptor-category "resource-specifications") 
+                   (is-eq descriptor-category "transmission-evidence")
+                   (is-eq descriptor-category "quality-verification")
+                   (is-eq descriptor-category "originator-parameters")) (err u163))
+
+      (print {action: "descriptors_appended", chamber-index: chamber-index, descriptor-category: descriptor-category, 
+              descriptor-hash: descriptor-hash, submitter: tx-sender})
+      (ok true)
+    )
+  )
+)
+
+;; Schedule operation with protection period
+(define-public (queue-protocol-operation (operation-type (string-ascii 20)) (operation-values (list 10 uint)))
+  (begin
+    (asserts! (is-eq tx-sender ADMIN_USER) ERR_UNAUTHORIZED)
+    (asserts! (> (len operation-values) u0) ERR_INVALID_QUANTITY)
+    (let
+      (
+        (execution-timestamp (+ block-height u144)) ;; 24 hours delay
+      )
+      (print {action: "operation_queued", operation-type: operation-type, operation-values: operation-values, execution-timestamp: execution-timestamp})
+      (ok execution-timestamp)
+    )
+  )
+)
+
+;; Execute chronological extraction
+(define-public (execute-chronological-extraction (chamber-index uint))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (originator (get originator chamber-data))
+        (quantity (get quantity chamber-data))
+        (status (get chamber-status chamber-data))
+        (chronological-delay u24) ;; 24 blocks delay (~4 hours)
+      )
+      ;; Only originator or admin can execute
+      (asserts! (or (is-eq tx-sender originator) (is-eq tx-sender ADMIN_USER)) ERR_UNAUTHORIZED)
+      ;; Only from extraction-pending status
+      (asserts! (is-eq status "extraction-pending") (err u301))
+      ;; Chronological delay must have elapsed
+      (asserts! (>= block-height (+ (get genesis-block chamber-data) chronological-delay)) (err u302))
+
+      ;; Process extraction
+      (unwrap! (as-contract (stx-transfer? quantity tx-sender originator)) ERR_TRANSMISSION_FAILED)
+
+      ;; Update chamber status
+      (map-set ChamberRegistry
+        { chamber-index: chamber-index }
+        (merge chamber-data { chamber-status: "extracted", quantity: u0 })
+      )
+
+      (print {action: "chronological_extraction_completed", chamber-index: chamber-index, 
+              originator: originator, quantity: quantity})
+      (ok true)
+    )
+  )
+)
+
+
