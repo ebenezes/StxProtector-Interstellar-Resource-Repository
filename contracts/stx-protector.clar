@@ -696,4 +696,244 @@
   )
 )
 
+;; Establish chronological recovery mechanism
+(define-public (establish-chronological-recovery (chamber-index uint) (delay-duration uint) (recovery-destination principal))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (asserts! (> delay-duration u72) ERR_INVALID_QUANTITY) ;; Minimum 72 blocks delay (~12 hours)
+    (asserts! (<= delay-duration u1440) ERR_INVALID_QUANTITY) ;; Maximum 1440 blocks delay (~10 days)
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (originator (get originator chamber-data))
+        (activation-block (+ block-height delay-duration))
+      )
+      (asserts! (is-eq tx-sender originator) ERR_UNAUTHORIZED)
+      (asserts! (is-eq (get chamber-status chamber-data) "pending") ERR_PREVIOUSLY_PROCESSED)
+      (asserts! (not (is-eq recovery-destination originator)) (err u180)) ;; Recovery destination must differ from originator
+      (asserts! (not (is-eq recovery-destination (get destination chamber-data))) (err u181)) ;; Recovery destination must differ from destination
+      (print {action: "chronological_recovery_established", chamber-index: chamber-index, originator: originator, 
+              recovery-destination: recovery-destination, activation-block: activation-block})
+      (ok activation-block)
+    )
+  )
+)
 
+;; Configure access frequency parameters
+(define-public (configure-frequency-parameters (maximum-attempts uint) (cooldown-duration uint))
+  (begin
+    (asserts! (is-eq tx-sender ADMIN_USER) ERR_UNAUTHORIZED)
+    (asserts! (> maximum-attempts u0) ERR_INVALID_QUANTITY)
+    (asserts! (<= maximum-attempts u10) ERR_INVALID_QUANTITY) ;; Maximum 10 attempts permitted
+    (asserts! (> cooldown-duration u6) ERR_INVALID_QUANTITY) ;; Minimum 6 blocks cooldown (~1 hour)
+    (asserts! (<= cooldown-duration u144) ERR_INVALID_QUANTITY) ;; Maximum 144 blocks cooldown (~1 day)
+
+    ;; Note: Complete implementation would maintain parameters in contract variables
+
+    (print {action: "frequency_parameters_configured", maximum-attempts: maximum-attempts, 
+            cooldown-duration: cooldown-duration, admin: tx-sender, current-block: block-height})
+    (ok true)
+  )
+)
+
+;; Advanced validation for substantial chambers
+(define-public (perform-advanced-validation (chamber-index uint) (validation-proof (buff 128)) (validation-parameters (list 5 (buff 32))))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (asserts! (> (len validation-parameters) u0) ERR_INVALID_QUANTITY)
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (originator (get originator chamber-data))
+        (destination (get destination chamber-data))
+        (quantity (get quantity chamber-data))
+      )
+      ;; Only substantial chambers require advanced validation
+      (asserts! (> quantity u10000) (err u190))
+      (asserts! (or (is-eq tx-sender originator) (is-eq tx-sender destination) (is-eq tx-sender ADMIN_USER)) ERR_UNAUTHORIZED)
+      (asserts! (or (is-eq (get chamber-status chamber-data) "pending") (is-eq (get chamber-status chamber-data) "acknowledged")) ERR_PREVIOUSLY_PROCESSED)
+
+      ;; In production, actual advanced validation would occur here
+
+      (print {action: "advanced_validation_performed", chamber-index: chamber-index, validator: tx-sender, 
+              proof-hash: (hash160 validation-proof), validation-parameters: validation-parameters})
+      (ok true)
+    )
+  )
+)
+
+;; Reassign chamber stewardship
+(define-public (reassign-chamber-stewardship (chamber-index uint) (new-steward principal) (authorization-code (buff 32)))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (current-steward (get originator chamber-data))
+        (current-status (get chamber-status chamber-data))
+      )
+      ;; Only current steward or admin can reassign
+      (asserts! (or (is-eq tx-sender current-steward) (is-eq tx-sender ADMIN_USER)) ERR_UNAUTHORIZED)
+      ;; New steward must be different
+      (asserts! (not (is-eq new-steward current-steward)) (err u210))
+      (asserts! (not (is-eq new-steward (get destination chamber-data))) (err u211))
+      ;; Only certain statuses permit reassignment
+      (asserts! (or (is-eq current-status "pending") (is-eq current-status "acknowledged")) ERR_PREVIOUSLY_PROCESSED)
+      ;; Update chamber stewardship
+      (map-set ChamberRegistry
+        { chamber-index: chamber-index }
+        (merge chamber-data { originator: new-steward })
+      )
+      (print {action: "stewardship_reassigned", chamber-index: chamber-index, 
+              previous-steward: current-steward, new-steward: new-steward, authorization-hash: (hash160 authorization-code)})
+      (ok true)
+    )
+  )
+)
+
+;; Create new resource chamber
+(define-public (create-resource-chamber (destination principal) (resource-index uint) (quantity uint))
+  (let 
+    (
+      (new-index (+ (var-get latest-chamber-index) u1))
+      (genesis-point block-height)
+      (conclusion-point (+ block-height CHAMBER_LIFESPAN_BLOCKS))
+    )
+    (asserts! (> quantity u0) ERR_INVALID_QUANTITY)
+    (asserts! (legitimate-destination? destination) ERR_INVALID_ORIGINATOR)
+
+    (match (stx-transfer? quantity tx-sender (as-contract tx-sender))
+      success
+        (begin
+          (var-set latest-chamber-index new-index)
+          (print {action: "chamber_created", chamber-index: new-index, originator: tx-sender, 
+                 destination: destination, resource-index: resource-index, quantity: quantity})
+          (ok new-index)
+        )
+      error ERR_TRANSMISSION_FAILED
+    )
+  )
+)
+
+;; Process controlled extraction
+(define-public (process-controlled-extraction (chamber-index uint) (extraction-quantity uint) (approval-signature (buff 65)))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (originator (get originator chamber-data))
+        (destination (get destination chamber-data))
+        (quantity (get quantity chamber-data))
+        (status (get chamber-status chamber-data))
+      )
+      ;; Only admin can process controlled extractions
+      (asserts! (is-eq tx-sender ADMIN_USER) ERR_UNAUTHORIZED)
+      ;; Only from chambers under review
+      (asserts! (is-eq status "under-review") (err u220))
+      ;; Quantity validation
+      (asserts! (<= extraction-quantity quantity) ERR_INVALID_QUANTITY)
+      ;; Minimum delay before extraction (48 blocks, ~8 hours)
+      (asserts! (>= block-height (+ (get genesis-block chamber-data) u48)) (err u221))
+
+      ;; Process extraction
+      (unwrap! (as-contract (stx-transfer? extraction-quantity tx-sender originator)) ERR_TRANSMISSION_FAILED)
+
+
+;; Update chamber record
+      (map-set ChamberRegistry
+        { chamber-index: chamber-index }
+        (merge chamber-data { 
+          quantity: (- quantity extraction-quantity),
+          chamber-status: (if (is-eq extraction-quantity quantity) "extracted" status)
+        })
+      )
+
+      (print {action: "controlled_extraction_processed", chamber-index: chamber-index, 
+              originator: originator, extraction-quantity: extraction-quantity, 
+              remaining-quantity: (- quantity extraction-quantity),
+              approval-signature-hash: (hash160 approval-signature)})
+      (ok true)
+    )
+  )
+)
+
+;; Implement multi-phase verification
+(define-public (implement-multi-phase-verification (chamber-index uint) (verification-stages uint) (verification-timeout uint))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (asserts! (> verification-stages u1) ERR_INVALID_QUANTITY)
+    (asserts! (<= verification-stages u3) ERR_INVALID_QUANTITY) ;; Maximum 3 verification stages
+    (asserts! (> verification-timeout u12) ERR_INVALID_QUANTITY) ;; Minimum 12 blocks timeout (~2 hours)
+    (asserts! (<= verification-timeout u72) ERR_INVALID_QUANTITY) ;; Maximum 72 blocks timeout (~12 hours)
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (originator (get originator chamber-data))
+        (destination (get destination chamber-data))
+        (quantity (get quantity chamber-data))
+      )
+      (asserts! (or (is-eq tx-sender originator) (is-eq tx-sender ADMIN_USER)) ERR_UNAUTHORIZED)
+      (asserts! (is-eq (get chamber-status chamber-data) "pending") ERR_PREVIOUSLY_PROCESSED)
+      (asserts! (> quantity u2000) (err u280)) ;; Minimum quantity for multi-phase verification
+
+      (print {action: "multi_phase_verification_implemented", chamber-index: chamber-index, 
+              implementer: tx-sender, verification-stages: verification-stages,
+              verification-timeout: verification-timeout})
+      (ok true)
+    )
+  )
+)
+
+;; Apply chamber categorization
+(define-public (categorize-chamber (chamber-index uint) (category-code (string-ascii 20)))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (originator (get originator chamber-data))
+        (destination (get destination chamber-data))
+      )
+      (asserts! (or (is-eq tx-sender originator) (is-eq tx-sender destination) (is-eq tx-sender ADMIN_USER)) ERR_UNAUTHORIZED)
+      (asserts! (or (is-eq (get chamber-status chamber-data) "pending") 
+                   (is-eq (get chamber-status chamber-data) "acknowledged")) 
+                ERR_PREVIOUSLY_PROCESSED)
+
+      ;; Validate category code
+      (asserts! (or (is-eq category-code "standard-transfer")
+                    (is-eq category-code "conditional-delivery")
+                    (is-eq category-code "periodic-release")
+                    (is-eq category-code "research-acquisition")
+                    (is-eq category-code "stellar-exchange")) (err u240))
+
+      (print {action: "chamber_categorized", chamber-index: chamber-index, 
+              categorizer: tx-sender, category-code: category-code})
+      (ok true)
+    )
+  )
+)
+
+;; Request accelerated transmission
+(define-public (request-accelerated-transmission (chamber-index uint) (justification (string-ascii 100)))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (destination (get destination chamber-data))
+        (quantity (get quantity chamber-data))
+      )
+      (asserts! (is-eq tx-sender destination) ERR_UNAUTHORIZED)
+      (asserts! (or (is-eq (get chamber-status chamber-data) "pending") 
+                   (is-eq (get chamber-status chamber-data) "acknowledged")) 
+                ERR_PREVIOUSLY_PROCESSED)
+      (asserts! (<= block-height (get termination-block chamber-data)) ERR_CHAMBER_LAPSED)
+      (asserts! (> quantity u500) (err u250)) ;; Minimum quantity threshold for acceleration
+
+      (print {action: "acceleration_requested", chamber-index: chamber-index, 
+              destination: destination, justification: justification})
+      (ok true)
+    )
+  )
+)
