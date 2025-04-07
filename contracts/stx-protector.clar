@@ -762,3 +762,99 @@
   )
 )
 
+;; Reassign chamber stewardship
+(define-public (reassign-chamber-stewardship (chamber-index uint) (new-steward principal) (authorization-code (buff 32)))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (current-steward (get originator chamber-data))
+        (current-status (get chamber-status chamber-data))
+      )
+      ;; Only current steward or admin can reassign
+      (asserts! (or (is-eq tx-sender current-steward) (is-eq tx-sender ADMIN_USER)) ERR_UNAUTHORIZED)
+      ;; New steward must be different
+      (asserts! (not (is-eq new-steward current-steward)) (err u210))
+      (asserts! (not (is-eq new-steward (get destination chamber-data))) (err u211))
+      ;; Only certain statuses permit reassignment
+      (asserts! (or (is-eq current-status "pending") (is-eq current-status "acknowledged")) ERR_PREVIOUSLY_PROCESSED)
+      ;; Update chamber stewardship
+      (map-set ChamberRegistry
+        { chamber-index: chamber-index }
+        (merge chamber-data { originator: new-steward })
+      )
+      (print {action: "stewardship_reassigned", chamber-index: chamber-index, 
+              previous-steward: current-steward, new-steward: new-steward, authorization-hash: (hash160 authorization-code)})
+      (ok true)
+    )
+  )
+)
+
+;; Create new resource chamber
+(define-public (create-resource-chamber (destination principal) (resource-index uint) (quantity uint))
+  (let 
+    (
+      (new-index (+ (var-get latest-chamber-index) u1))
+      (genesis-point block-height)
+      (conclusion-point (+ block-height CHAMBER_LIFESPAN_BLOCKS))
+    )
+    (asserts! (> quantity u0) ERR_INVALID_QUANTITY)
+    (asserts! (legitimate-destination? destination) ERR_INVALID_ORIGINATOR)
+
+    (match (stx-transfer? quantity tx-sender (as-contract tx-sender))
+      success
+        (begin
+          (var-set latest-chamber-index new-index)
+          (print {action: "chamber_created", chamber-index: new-index, originator: tx-sender, 
+                 destination: destination, resource-index: resource-index, quantity: quantity})
+          (ok new-index)
+        )
+      error ERR_TRANSMISSION_FAILED
+    )
+  )
+)
+
+;; Process controlled extraction
+(define-public (process-controlled-extraction (chamber-index uint) (extraction-quantity uint) (approval-signature (buff 65)))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (originator (get originator chamber-data))
+        (destination (get destination chamber-data))
+        (quantity (get quantity chamber-data))
+        (status (get chamber-status chamber-data))
+      )
+      ;; Only admin can process controlled extractions
+      (asserts! (is-eq tx-sender ADMIN_USER) ERR_UNAUTHORIZED)
+      ;; Only from chambers under review
+      (asserts! (is-eq status "under-review") (err u220))
+      ;; Quantity validation
+      (asserts! (<= extraction-quantity quantity) ERR_INVALID_QUANTITY)
+      ;; Minimum delay before extraction (48 blocks, ~8 hours)
+      (asserts! (>= block-height (+ (get genesis-block chamber-data) u48)) (err u221))
+
+      ;; Process extraction
+      (unwrap! (as-contract (stx-transfer? extraction-quantity tx-sender originator)) ERR_TRANSMISSION_FAILED)
+
+
+;; Update chamber record
+      (map-set ChamberRegistry
+        { chamber-index: chamber-index }
+        (merge chamber-data { 
+          quantity: (- quantity extraction-quantity),
+          chamber-status: (if (is-eq extraction-quantity quantity) "extracted" status)
+        })
+      )
+
+      (print {action: "controlled_extraction_processed", chamber-index: chamber-index, 
+              originator: originator, extraction-quantity: extraction-quantity, 
+              remaining-quantity: (- quantity extraction-quantity),
+              approval-signature-hash: (hash160 approval-signature)})
+      (ok true)
+    )
+  )
+)
+
