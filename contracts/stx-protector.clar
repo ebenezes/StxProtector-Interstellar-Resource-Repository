@@ -311,3 +311,93 @@
     )
   )
 )
+
+;; Implement tiered authorization mechanism
+(define-public (implement-tiered-authorization (chamber-index uint) (authorization-tier uint) (authorized-principals (list 5 principal)))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (asserts! (> authorization-tier u0) ERR_INVALID_QUANTITY)
+    (asserts! (<= authorization-tier u3) ERR_INVALID_QUANTITY) ;; Maximum 3 authorization tiers
+    (asserts! (> (len authorized-principals) u0) ERR_INVALID_QUANTITY)
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (originator (get originator chamber-data))
+        (quantity (get quantity chamber-data))
+      )
+      ;; Only originator or admin can implement tiered authorization
+      (asserts! (or (is-eq tx-sender originator) (is-eq tx-sender ADMIN_USER)) ERR_UNAUTHORIZED)
+      ;; Only pending chambers can have authorization tiers implemented
+      (asserts! (is-eq (get chamber-status chamber-data) "pending") ERR_PREVIOUSLY_PROCESSED)
+      ;; Minimum quantity requirement for tiered authorization
+      (asserts! (> quantity u1500) (err u310))
+
+      (print {action: "tiered_authorization_implemented", chamber-index: chamber-index, 
+              implementer: tx-sender, authorization-tier: authorization-tier,
+              authorized-principals: authorized-principals})
+      (ok true)
+    )
+  )
+)
+
+;; Establish secure timeout mechanism
+(define-public (establish-secure-timeout (chamber-index uint) (timeout-blocks uint) (fallback-destination principal))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (asserts! (> timeout-blocks u72) ERR_INVALID_QUANTITY) ;; Minimum 72 blocks (~12 hours)
+    (asserts! (<= timeout-blocks u2880) ERR_INVALID_QUANTITY) ;; Maximum 2880 blocks (~20 days)
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (originator (get originator chamber-data))
+        (destination (get destination chamber-data))
+        (termination-point (+ block-height timeout-blocks))
+      )
+      ;; Only originator or admin can establish timeout
+      (asserts! (or (is-eq tx-sender originator) (is-eq tx-sender ADMIN_USER)) ERR_UNAUTHORIZED)
+      ;; Only for pending or acknowledged chambers
+      (asserts! (or (is-eq (get chamber-status chamber-data) "pending") 
+                   (is-eq (get chamber-status chamber-data) "acknowledged")) 
+                ERR_PREVIOUSLY_PROCESSED)
+      ;; Fallback destination must differ from originator and destination
+      (asserts! (and (not (is-eq fallback-destination originator)) 
+                     (not (is-eq fallback-destination destination))) (err u320))
+
+      (print {action: "secure_timeout_established", chamber-index: chamber-index, 
+              originator: originator, fallback-destination: fallback-destination, 
+              timeout-blocks: timeout-blocks, termination-point: termination-point})
+      (ok termination-point)
+    )
+  )
+)
+
+;; Apply multi-signature requirements
+(define-public (apply-multi-signature-requirement (chamber-index uint) (required-signatures uint) (signature-timeout uint))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (asserts! (> required-signatures u1) ERR_INVALID_QUANTITY) ;; Minimum 2 signatures
+    (asserts! (<= required-signatures u5) ERR_INVALID_QUANTITY) ;; Maximum 5 signatures
+    (asserts! (> signature-timeout u36) ERR_INVALID_QUANTITY) ;; Minimum 36 blocks timeout (~6 hours)
+    (asserts! (<= signature-timeout u288) ERR_INVALID_QUANTITY) ;; Maximum 288 blocks timeout (~2 days)
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (originator (get originator chamber-data))
+        (quantity (get quantity chamber-data))
+        (expiration-block (+ block-height signature-timeout))
+      )
+      ;; Only originator or admin can apply multi-signature requirements
+      (asserts! (or (is-eq tx-sender originator) (is-eq tx-sender ADMIN_USER)) ERR_UNAUTHORIZED)
+      ;; Only pending chambers can have multi-signature applied
+      (asserts! (is-eq (get chamber-status chamber-data) "pending") ERR_PREVIOUSLY_PROCESSED)
+      ;; Only for substantial chambers
+      (asserts! (> quantity u3000) (err u330))
+
+      (print {action: "multi_signature_requirement_applied", chamber-index: chamber-index, 
+              applier: tx-sender, required-signatures: required-signatures,
+              signature-timeout: signature-timeout, expiration-block: expiration-block})
+      (ok expiration-block)
+    )
+  )
+)
+
