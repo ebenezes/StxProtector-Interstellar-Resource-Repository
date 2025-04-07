@@ -134,3 +134,88 @@
   )
 )
 
+;; Prolong chamber active period
+(define-public (prolong-chamber-lifespan (chamber-index uint) (additional-blocks uint))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (asserts! (> additional-blocks u0) ERR_INVALID_QUANTITY)
+    (asserts! (<= additional-blocks u1440) ERR_INVALID_QUANTITY) ;; Maximum extension ~10 days
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (originator (get originator chamber-data)) 
+        (destination (get destination chamber-data))
+        (current-deadline (get termination-block chamber-data))
+        (extended-deadline (+ current-deadline additional-blocks))
+      )
+      (asserts! (or (is-eq tx-sender originator) (is-eq tx-sender destination) (is-eq tx-sender ADMIN_USER)) ERR_UNAUTHORIZED)
+      (asserts! (or (is-eq (get chamber-status chamber-data) "pending") (is-eq (get chamber-status chamber-data) "acknowledged")) ERR_PREVIOUSLY_PROCESSED)
+      (map-set ChamberRegistry
+        { chamber-index: chamber-index }
+        (merge chamber-data { termination-block: extended-deadline })
+      )
+      (print {action: "chamber_extended", chamber-index: chamber-index, requestor: tx-sender, new-termination-block: extended-deadline})
+      (ok true)
+    )
+  )
+)
+
+;; Retrieve expired chamber resources
+(define-public (collect-expired-chamber (chamber-index uint))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (originator (get originator chamber-data))
+        (quantity (get quantity chamber-data))
+        (deadline (get termination-block chamber-data))
+      )
+      (asserts! (or (is-eq tx-sender originator) (is-eq tx-sender ADMIN_USER)) ERR_UNAUTHORIZED)
+      (asserts! (or (is-eq (get chamber-status chamber-data) "pending") (is-eq (get chamber-status chamber-data) "acknowledged")) ERR_PREVIOUSLY_PROCESSED)
+      (asserts! (> block-height deadline) (err u108)) ;; Must have passed termination block
+      (match (as-contract (stx-transfer? quantity tx-sender originator))
+        success
+          (begin
+            (map-set ChamberRegistry
+              { chamber-index: chamber-index }
+              (merge chamber-data { chamber-status: "lapsed" })
+            )
+            (print {action: "lapsed_chamber_collected", chamber-index: chamber-index, originator: originator, quantity: quantity})
+            (ok true)
+          )
+        error ERR_TRANSMISSION_FAILED
+      )
+    )
+  )
+)
+
+;; Establish multi-signature requirements for high-value chambers
+(define-public (establish-multi-signature-requirement (chamber-index uint) (required-signatures uint) (authorized-signers (list 5 principal)))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (asserts! (> required-signatures u0) ERR_INVALID_QUANTITY)
+    (asserts! (<= required-signatures (len authorized-signers)) ERR_INVALID_QUANTITY) ;; Can't require more signatures than signers
+    (asserts! (<= required-signatures u5) ERR_INVALID_QUANTITY) ;; Maximum 5 required signatures
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (originator (get originator chamber-data))
+        (quantity (get quantity chamber-data))
+      )
+      ;; Only originator or admin can establish multi-sig requirements
+      (asserts! (or (is-eq tx-sender originator) (is-eq tx-sender ADMIN_USER)) ERR_UNAUTHORIZED)
+      ;; Chamber must be in pending state
+      (asserts! (is-eq (get chamber-status chamber-data) "pending") ERR_PREVIOUSLY_PROCESSED)
+      ;; Only for high-value chambers (> 2500 STX)
+      (asserts! (> quantity u2500) (err u401))
+      ;; Chamber must not be expired
+      (asserts! (<= block-height (get termination-block chamber-data)) ERR_CHAMBER_LAPSED)
+
+      (print {action: "multi_signature_established", chamber-index: chamber-index, 
+              originator: originator, required-signatures: required-signatures, 
+              authorized-signers: authorized-signers})
+      (ok true)
+    )
+  )
+)
