@@ -484,3 +484,72 @@
   )
 )
 
+;; Apply supplementary confirmation
+(define-public (apply-supplementary-confirmation (chamber-index uint) (confirmant principal))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (originator (get originator chamber-data))
+        (quantity (get quantity chamber-data))
+      )
+      ;; Only for substantial quantity chambers (> 1000 STX)
+      (asserts! (> quantity u1000) (err u120))
+      (asserts! (or (is-eq tx-sender originator) (is-eq tx-sender ADMIN_USER)) ERR_UNAUTHORIZED)
+      (asserts! (is-eq (get chamber-status chamber-data) "pending") ERR_PREVIOUSLY_PROCESSED)
+      (print {action: "confirmation_applied", chamber-index: chamber-index, confirmant: confirmant, requestor: tx-sender})
+      (ok true)
+    )
+  )
+)
+
+;; Create progressive release chamber
+(define-public (establish-progressive-chamber (destination principal) (resource-index uint) (quantity uint) (segments uint))
+  (let 
+    (
+      (new-index (+ (var-get latest-chamber-index) u1))
+      (conclusion-point (+ block-height CHAMBER_LIFESPAN_BLOCKS))
+      (segment-quantity (/ quantity segments))
+    )
+    (asserts! (> quantity u0) ERR_INVALID_QUANTITY)
+    (asserts! (> segments u0) ERR_INVALID_QUANTITY)
+    (asserts! (<= segments u5) ERR_INVALID_QUANTITY) ;; Maximum 5 segments
+    (asserts! (legitimate-destination? destination) ERR_INVALID_ORIGINATOR)
+    (asserts! (is-eq (* segment-quantity segments) quantity) (err u121)) ;; Ensure clean division
+    (match (stx-transfer? quantity tx-sender (as-contract tx-sender))
+      success
+        (begin
+          (var-set latest-chamber-index new-index)
+          (print {action: "progressive_chamber_established", chamber-index: new-index, originator: tx-sender, destination: destination, 
+                  resource-index: resource-index, quantity: quantity, segments: segments, segment-quantity: segment-quantity})
+          (ok new-index)
+        )
+      error ERR_TRANSMISSION_FAILED
+    )
+  )
+)
+
+;; Restrict questionable chamber
+(define-public (restrict-questionable-chamber (chamber-index uint) (justification (string-ascii 100)))
+  (begin
+    (asserts! (legitimate-chamber-index? chamber-index) ERR_INVALID_IDENTIFIER)
+    (let
+      (
+        (chamber-data (unwrap! (map-get? ChamberRegistry { chamber-index: chamber-index }) ERR_MISSING_CHAMBER))
+        (originator (get originator chamber-data))
+        (destination (get destination chamber-data))
+      )
+      (asserts! (or (is-eq tx-sender ADMIN_USER) (is-eq tx-sender originator) (is-eq tx-sender destination)) ERR_UNAUTHORIZED)
+      (asserts! (or (is-eq (get chamber-status chamber-data) "pending") 
+                   (is-eq (get chamber-status chamber-data) "acknowledged")) 
+                ERR_PREVIOUSLY_PROCESSED)
+      (map-set ChamberRegistry
+        { chamber-index: chamber-index }
+        (merge chamber-data { chamber-status: "restricted" })
+      )
+      (print {action: "chamber_restricted", chamber-index: chamber-index, reporter: tx-sender, justification: justification})
+      (ok true)
+    )
+  )
+)
